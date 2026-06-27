@@ -6,6 +6,11 @@ import { fs } from '@zip.js/zip.js'
 import normalizeFileName from 'filenamify/browser'
 import { cluster } from 'radash'
 import { CommonTranslationKey, en, Namespace, zh } from '../common/i18n'
+import {
+  WindowMessageType,
+  type FetchAssetResponse,
+  type WindowFetchAssetResponse,
+} from '../common/message'
 import { confirm } from '../common/notification'
 import { legacyFileSave } from '../common/legacy'
 import { reportBug } from '../common/issue'
@@ -367,6 +372,615 @@ interface DownloadResult {
   content: Blob
 }
 
+interface GenericImage {
+  alt: string
+  filename: string
+  src: string
+  y?: number
+}
+
+const SUPPORTED_GENERIC_DOCUMENT_HOSTS = new Set([
+  'docs.corp.kuaishou.com',
+  'docs.qingque.cn',
+  'kstack.corp.kuaishou.com',
+])
+
+const KSTACK_ARTICLES_HOST = 'kstack.corp.kuaishou.com'
+
+const isSupportedGenericDocument = (): boolean =>
+  SUPPORTED_GENERIC_DOCUMENT_HOSTS.has(location.hostname)
+
+const escapeMarkdown = (value: string): string =>
+  value.replace(/[\\`*_{}[\]()#+\-.!|>]/g, '\\$&')
+
+const normalizeText = (value: string): string =>
+  value
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .trim()
+
+const cleanDocumentTitle = (value: string): string =>
+  normalizeText(
+    value
+      .replace(/\s+-\s+云文档$/, '')
+      .replace(/\s+-\s+轻雀文档$/, '')
+      .replace(/\s+-\s+文章\s+-\s+KStack$/, ''),
+  )
+
+const normalizeDocumentFileName = (value: string): string =>
+  normalizeFileName(
+    (cleanDocumentTitle(value) || 'doc')
+      .replace(/^\d+(?=\p{Script=Han})/u, '')
+      .slice(0, OneHundred),
+  )
+
+const getVisibleText = (node: Node): string =>
+  Array.from(node.childNodes)
+    .map(child =>
+      child.nodeType === Node.TEXT_NODE
+        ? (child.textContent ?? '')
+        : child instanceof HTMLElement && !isHiddenElement(child)
+          ? getVisibleText(child)
+          : '',
+    )
+    .join('')
+
+const isHiddenElement = (element: HTMLElement): boolean => {
+  const style = getComputedStyle(element)
+  return (
+    style.display === 'none' ||
+    style.visibility === 'hidden' ||
+    element.getAttribute('aria-hidden') === 'true'
+  )
+}
+
+const selectGenericDocumentRoot = (): HTMLElement => {
+  const vodkaRoot = document.querySelector<HTMLElement>(
+    '#vodka-paginateddocumentplugin, .vodka-page-content-wrapper',
+  )
+  if (vodkaRoot) return vodkaRoot
+
+  if (location.hostname === KSTACK_ARTICLES_HOST) {
+    const kstackRoot = document.querySelector<HTMLElement>(
+      '.ck-content, .ArticleContent_wrapper__vmEAq',
+    )
+    if (kstackRoot && !isHiddenElement(kstackRoot)) return kstackRoot
+  }
+
+  const selectors = [
+    'article',
+    'main',
+    '[role="main"]',
+    '[contenteditable="true"]',
+    '[class*="editor" i]',
+    '[class*="document" i]',
+    '[class*="doc" i]',
+    '[class*="reader" i]',
+    '[class*="content" i]',
+  ]
+
+  const candidates = selectors
+    .map(selector =>
+      Array.from(document.querySelectorAll<HTMLElement>(selector)),
+    )
+    .flat(1)
+    .filter(element => !isHiddenElement(element))
+
+  return (
+    candidates
+      .map(element => ({
+        element,
+        textLength: normalizeText(element.innerText).length,
+      }))
+      .filter(({ textLength }) => textLength > 0)
+      .sort((a, b) => b.textLength - a.textLength)
+      .at(0)?.element ?? document.body
+  )
+}
+
+const extensionFromUrl = (src: string): string => {
+  try {
+    const pathname = new URL(src, location.href).pathname
+    const extension = pathname
+      .split('/')
+      .pop()
+      ?.match(/\.[a-z0-9]{1,8}$/i)?.[0]
+    return extension ?? '.png'
+  } catch {
+    return '.png'
+  }
+}
+
+const normalizeVodkaLineText = (value: string): string => {
+  const lines = value.split('\n').map(normalizeText).filter(Boolean)
+
+  return lines.filter((line, index) => line !== lines[index - 1]).join('\n')
+}
+
+interface VodkaTextRecord {
+  text: string
+  y: number
+  x: number
+}
+
+const isVodkaCodeLineNumber = (text: string): boolean => /^\d+$/.test(text)
+
+const normalizeVodkaCodeBlocks = (
+  records: VodkaTextRecord[],
+): VodkaTextRecord[] => {
+  const normalized: VodkaTextRecord[] = []
+  const codeToolbarTexts = new Set(['自动换行', '折叠'])
+
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index]
+    const language = record.text.toLowerCase() === 'sql' ? 'sql' : null
+
+    if (!language) {
+      normalized.push(record)
+      continue
+    }
+
+    let cursor = index + 1
+    while (codeToolbarTexts.has(records[cursor]?.text)) {
+      cursor++
+    }
+
+    const codeLines: string[] = []
+    while (
+      cursor < records.length &&
+      isVodkaCodeLineNumber(records[cursor].text) &&
+      records[cursor + 1] !== undefined
+    ) {
+      codeLines.push(records[cursor + 1].text)
+      cursor += 2
+    }
+
+    if (codeLines.length === 0) {
+      normalized.push(record)
+      continue
+    }
+
+    normalized.push({
+      ...record,
+      text: ['```' + language, ...codeLines, '```'].join('\n'),
+    })
+    index = cursor - 1
+  }
+
+  return normalized
+}
+
+const extensionFromContentType = (
+  contentType: string | null,
+): string | null => {
+  if (!contentType) return null
+  if (contentType.includes('webp')) return '.webp'
+  if (contentType.includes('png')) return '.png'
+  if (contentType.includes('jpeg') || contentType.includes('jpg')) return '.jpg'
+  if (contentType.includes('gif')) return '.gif'
+  return null
+}
+
+const requestAssetFetchViaExtension = async (
+  src: string,
+): Promise<FetchAssetResponse | null> => {
+  const id = `${Date.now().toFixed()}-${Math.random().toString(36).slice(2)}`
+
+  return await new Promise(resolve => {
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener('message', onMessage)
+      resolve(null)
+    }, 30 * Second)
+
+    const onMessage = (event: MessageEvent<unknown>) => {
+      if (event.source !== window || event.origin !== location.origin) return
+
+      const data = event.data as Partial<WindowFetchAssetResponse>
+      if (
+        data.type !== WindowMessageType.FetchAssetResponse ||
+        data.id !== id
+      ) {
+        return
+      }
+
+      window.clearTimeout(timeout)
+      window.removeEventListener('message', onMessage)
+      resolve(data.response ?? null)
+    }
+
+    window.addEventListener('message', onMessage)
+    window.postMessage(
+      {
+        type: WindowMessageType.FetchAssetRequest,
+        id,
+        src,
+      },
+      location.origin,
+    )
+  })
+}
+
+const dataUrlToBlob = async (dataUrl: string): Promise<Blob> =>
+  await (await fetch(dataUrl)).blob()
+
+const fetchGenericImageBlob = async (
+  src: string,
+): Promise<{ blob: Blob; contentType: string | null } | null> => {
+  try {
+    const response = await fetch(src, { credentials: 'include' })
+    if (response.ok) {
+      const contentType = response.headers.get('content-type')
+      const blob = await response.blob()
+
+      return {
+        blob,
+        contentType: blob.type || contentType,
+      }
+    }
+  } catch {
+    // Some article CDNs allow <img> but block page fetch with CORS.
+  }
+
+  const response = await requestAssetFetchViaExtension(src)
+  if (!response?.ok) return null
+
+  const blob = await dataUrlToBlob(response.dataUrl)
+  return {
+    blob,
+    contentType: blob.type || response.contentType,
+  }
+}
+
+const replacePathExtension = (path: string, extension: string): string =>
+  /\.[a-z0-9]{1,8}$/i.test(path)
+    ? path.replace(/\.[a-z0-9]{1,8}$/i, extension)
+    : `${path}${extension}`
+
+const collectVodkaDocument = async (): Promise<{
+  markdown: string
+  images: GenericImage[]
+  title: string
+} | null> => {
+  const scroller = document.querySelector<HTMLElement>('#vodka-appview-editor')
+  const root = document.querySelector<HTMLElement>(
+    '#vodka-paginateddocumentplugin, .vodka-page-content-wrapper',
+  )
+  if (!scroller || !root) return null
+
+  const initialScrollTop = scroller.scrollTop
+  const records: VodkaTextRecord[] = []
+  const images = new Map<string, GenericImage>()
+  const step = Math.max(300, Math.floor(scroller.clientHeight * 0.45))
+  const maxScrollTop = Math.max(
+    0,
+    scroller.scrollHeight - scroller.clientHeight,
+  )
+
+  const collectVisible = () => {
+    const scrollTop = scroller.scrollTop
+
+    Array.from(root.querySelectorAll<HTMLElement>('.vodka-lineview-content'))
+      .map(line => {
+        const rect = line.getBoundingClientRect()
+        return {
+          text: normalizeVodkaLineText(line.innerText),
+          y: Math.round(scrollTop + rect.top),
+          x: Math.round(rect.left),
+        }
+      })
+      .filter(({ text }) => text)
+      .forEach(record => {
+        records.push(record)
+      })
+
+    Array.from(root.querySelectorAll<HTMLImageElement>('img'))
+      .map(image => {
+        const src = image.currentSrc || image.src
+        const rect = image.getBoundingClientRect()
+        return {
+          alt: normalizeText(image.alt),
+          filename: '',
+          src,
+          y: Math.round(scrollTop + rect.top),
+        }
+      })
+      .filter(image => image.src && !image.src.startsWith('data:'))
+      .forEach(image => {
+        if (!images.has(image.src)) {
+          images.set(image.src, {
+            ...image,
+            filename: `__vodka_image_${images.size.toFixed()}__`,
+          })
+        }
+      })
+  }
+
+  for (let top = 0; top <= maxScrollTop + step; top += step) {
+    scroller.scrollTop = Math.min(top, maxScrollTop)
+    await waitFor(0.45 * Second)
+    collectVisible()
+  }
+
+  scroller.scrollTop = initialScrollTop
+
+  const uniqueLines = Array.from(
+    new Map(
+      records.map(record => [`${record.y}:${record.text}`, record]),
+    ).values(),
+  )
+    .sort((a, b) => a.y - b.y || a.x - b.x)
+    .filter((line, index, lines) => line.text !== lines[index - 1]?.text)
+
+  const title = normalizeDocumentFileName(document.title)
+
+  const body = normalizeVodkaCodeBlocks(
+    uniqueLines.at(0)?.text.replace(/^\d+/, '') === title
+      ? uniqueLines.slice(1)
+      : uniqueLines,
+  )
+
+  const items: { text: string; y: number; x?: number }[] = [
+    { text: `# ${title}`, y: Number.NEGATIVE_INFINITY },
+    ...body,
+    ...Array.from(images.values()).map(image => ({
+      text: `![${image.alt || 'image'}](${image.filename})`,
+      y: image.y ?? Number.MAX_SAFE_INTEGER,
+      x: 0,
+    })),
+  ]
+
+  return {
+    markdown:
+      items
+        .sort((a, b) => a.y - b.y || (a.x ?? 0) - (b.x ?? 0))
+        .map(item => item.text)
+        .join('\n\n') + '\n',
+    images: Array.from(images.values()),
+    title,
+  }
+}
+
+const exportVodkaDocumentAsZip = async (): Promise<boolean> => {
+  const result = await collectVodkaDocument()
+  if (!result) return false
+
+  const { title, images } = result
+  const zipFs = new fs.FS()
+
+  let markdown = result.markdown
+  for (let index = 0; index < images.length; index++) {
+    const image = images[index]
+    const response = await fetch(image.src, { credentials: 'include' })
+    if (!response.ok) continue
+
+    const blob = await response.blob()
+    const extension =
+      extensionFromContentType(blob.type) ?? extensionFromUrl(image.src)
+    const filename = `image-${(index + 1).toFixed().padStart(3, '0')}${extension}`
+    zipFs.addBlob(`${title}/images/${filename}`, blob)
+    markdown = markdown.replace(`](${image.filename})`, `](images/${filename})`)
+  }
+
+  zipFs.addText(`${title}/${title}.md`, markdown)
+  legacyFileSave(await zipFs.exportBlob(), {
+    fileName: `${title}.zip`,
+  })
+
+  return true
+}
+
+const createGenericDomTransformer = () => {
+  const images: GenericImage[] = []
+  const imageSrcToFilename = new Map<string, string>()
+
+  const imageMarkdown = (image: HTMLImageElement): string => {
+    const src = image.currentSrc || image.src
+    if (!src || src.startsWith('data:')) return ''
+
+    let filename = imageSrcToFilename.get(src)
+    if (!filename) {
+      filename = `images/image-${(images.length + 1)
+        .toFixed()
+        .padStart(3, '0')}${extensionFromUrl(src)}`
+      imageSrcToFilename.set(src, filename)
+      images.push({
+        alt: normalizeText(image.alt),
+        filename,
+        src: new URL(src, location.href).toString(),
+      })
+    }
+
+    return `![${escapeMarkdown(normalizeText(image.alt))}](${filename})`
+  }
+
+  const inline = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return escapeMarkdown(normalizeText(node.textContent ?? ''))
+    }
+
+    if (!(node instanceof HTMLElement) || isHiddenElement(node)) {
+      return ''
+    }
+
+    const children = () => Array.from(node.childNodes).map(inline).join(' ')
+
+    switch (node.tagName.toLowerCase()) {
+      case 'br':
+        return '  \n'
+      case 'strong':
+      case 'b':
+        return `**${children()}**`
+      case 'em':
+      case 'i':
+        return `*${children()}*`
+      case 'code':
+        return `\`${normalizeText(node.textContent ?? '')}\``
+      case 'a': {
+        const href = node.getAttribute('href')
+        const text = children() || escapeMarkdown(normalizeText(href ?? ''))
+        if (!href) return text
+        return `[${text}](${new URL(href, location.href).toString()})`
+      }
+      case 'img':
+        return imageMarkdown(node as HTMLImageElement)
+      default:
+        return children()
+    }
+  }
+
+  const block = (node: Node, depth = 0): string[] => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = inline(node)
+      return text ? [text] : []
+    }
+
+    if (!(node instanceof HTMLElement) || isHiddenElement(node)) {
+      return []
+    }
+
+    const tag = node.tagName.toLowerCase()
+    const childBlocks = () =>
+      Array.from(node.childNodes)
+        .map(child => block(child, depth))
+        .flat(1)
+    const plain = () => normalizeText(getVisibleText(node))
+
+    if (tag === 'script' || tag === 'style' || tag === 'noscript') return []
+    if (/^h[1-6]$/.test(tag)) {
+      const level = Number(tag.slice(1))
+      const text = plain()
+      return text ? [`${'#'.repeat(level)} ${escapeMarkdown(text)}`] : []
+    }
+    if (tag === 'p') {
+      const text = inline(node)
+      return text ? [text] : []
+    }
+    if (tag === 'pre') {
+      const className = [
+        node.className,
+        node.querySelector('code')?.className ?? '',
+      ].join(' ')
+      const language = className.match(/language-([\w-]+)/)?.[1] ?? ''
+
+      return ['```' + language, (node.textContent ?? '').trimEnd(), '```']
+    }
+    if (tag === 'blockquote') {
+      const text = childBlocks().join('\n\n') || inline(node)
+      return text ? [text.replace(/^/gm, '> ').replace(/^> $/gm, '>')] : []
+    }
+    if (tag === 'img') {
+      const text = imageMarkdown(node as HTMLImageElement)
+      return text ? [text] : []
+    }
+    if (tag === 'li') {
+      const text = childBlocks().join('\n\n') || inline(node)
+      const prefix = `${'  '.repeat(depth)}- `
+      return text
+        ? [prefix + text.replace(/\n/g, `\n${'  '.repeat(depth + 1)}`)]
+        : []
+    }
+    if (tag === 'ul' || tag === 'ol') {
+      return Array.from(node.children)
+        .map(child => block(child, depth))
+        .flat(1)
+    }
+    if (tag === 'table') {
+      const rows = Array.from(node.querySelectorAll('tr')).map(row =>
+        Array.from(row.querySelectorAll('th,td')).map(cell =>
+          normalizeText((cell as HTMLElement).innerText),
+        ),
+      )
+      if (rows.length === 0) return []
+      const maxColumns = Math.max(...rows.map(row => row.length))
+      const normalizedRows = rows.map(row =>
+        Array.from({ length: maxColumns }, (_, index) =>
+          escapeMarkdown(row[index] ?? ''),
+        ),
+      )
+      const [head = [], ...body] = normalizedRows
+      return [
+        `| ${head.join(' | ')} |`,
+        `| ${head.map(() => '---').join(' | ')} |`,
+        ...body.map(row => `| ${row.join(' | ')} |`),
+      ]
+    }
+
+    const blocks = childBlocks()
+    if (blocks.length > 0) return blocks
+
+    const text = plain()
+    return text ? [escapeMarkdown(text)] : []
+  }
+
+  return {
+    transform(root: HTMLElement): { markdown: string; images: GenericImage[] } {
+      return {
+        markdown: block(root).filter(Boolean).join('\n\n') + '\n',
+        images,
+      }
+    },
+  }
+}
+
+const exportGenericDocumentAsMarkdown = async (): Promise<void> => {
+  if (await exportVodkaDocumentAsZip()) {
+    return
+  }
+
+  const root = selectGenericDocumentRoot()
+  const transformer = createGenericDomTransformer()
+  const result = transformer.transform(root)
+  const displayTitle =
+    cleanDocumentTitle(
+      document.title || root.querySelector('h1')?.textContent || '',
+    ) || 'doc'
+  const title = normalizeDocumentFileName(displayTitle)
+  const markdownBody = result.markdown.trim()
+  let markdown =
+    markdownBody.startsWith(`# ${escapeMarkdown(displayTitle)}`) ||
+    markdownBody.startsWith(`# ${displayTitle}`)
+      ? `${markdownBody}\n`
+      : `# ${escapeMarkdown(displayTitle)}\n\n${markdownBody}\n`
+  const zipFs = new fs.FS()
+
+  await Promise.allSettled(
+    result.images.map(async image => {
+      const asset = await fetchGenericImageBlob(image.src)
+
+      if (!asset) {
+        markdown = markdown.replaceAll(
+          `](${image.filename})`,
+          `](${image.src})`,
+        )
+        return
+      }
+
+      const extension =
+        extensionFromContentType(asset.contentType) ??
+        extensionFromContentType(asset.blob.type) ??
+        extensionFromUrl(image.src)
+      const filename = replacePathExtension(image.filename, extension)
+
+      zipFs.addBlob(`${title}/${filename}`, asset.blob)
+
+      if (filename !== image.filename) {
+        markdown = markdown.replaceAll(`](${image.filename})`, `](${filename})`)
+      }
+    }),
+  )
+
+  result.images.forEach(image => {
+    if (markdown.includes(`](${image.filename})`)) {
+      markdown = markdown.replaceAll(`](${image.filename})`, `](${image.src})`)
+    }
+  })
+
+  zipFs.addText(`${title}/${title}.md`, markdown)
+  legacyFileSave(await zipFs.exportBlob(), {
+    fileName: `${title}.zip`,
+  })
+}
+
 type File = mdast.Image | mdast.Link
 
 const downloadFiles = async (
@@ -528,6 +1142,12 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
   }
 
   if (!docx.isDocx) {
+    if (isSupportedGenericDocument()) {
+      await exportGenericDocumentAsMarkdown()
+
+      return
+    }
+
     Toast.warning({ content: i18next.t(TranslationKey.NOT_SUPPORT) })
 
     throw new Error(DOWNLOAD_ABORTED)

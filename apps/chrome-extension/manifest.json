@@ -25,7 +25,11 @@
     "https://*.larksuite.com/*",
     "https://*.feishu-pre.net/*",
     "https://*.larkoffice.com/*",
-    "https://*.larkenterprise.com/*"
+    "https://*.larkenterprise.com/*",
+    "https://docs.corp.kuaishou.com/*",
+    "https://docs.qingque.cn/*",
+    "https://kstack.corp.kuaishou.com/*",
+    "https://static.yximgs.com/*"
   ],
   "content_scripts": [
     {
@@ -35,7 +39,10 @@
         "https://*.larksuite.com/*",
         "https://*.feishu-pre.net/*",
         "https://*.larkoffice.com/*",
-        "https://*.larkenterprise.com/*"
+        "https://*.larkenterprise.com/*",
+        "https://docs.corp.kuaishou.com/*",
+        "https://docs.qingque.cn/*",
+        "https://kstack.corp.kuaishou.com/*"
       ],
       "js": ["bundles/content.js"],
       "run_at": "document_end"

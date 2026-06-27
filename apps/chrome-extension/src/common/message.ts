@@ -6,11 +6,52 @@ export enum Flag {
   ExecuteDownloadScript = 'download_docx_as_markdown',
 }
 
-interface ExecuteScriptMessage {
+export interface ExecuteScriptMessage {
   flag: Flag
 }
 
-export type Message = ExecuteScriptMessage
+export enum RuntimeMessageType {
+  FetchAsset = 'fetch_asset',
+}
+
+export enum WindowMessageType {
+  FetchAssetRequest = 'cdc_fetch_asset_request',
+  FetchAssetResponse = 'cdc_fetch_asset_response',
+}
+
+export interface FetchAssetMessage {
+  type: RuntimeMessageType.FetchAsset
+  src: string
+}
+
+export interface FetchAssetSuccessResponse {
+  ok: true
+  dataUrl: string
+  contentType: string | null
+}
+
+export interface FetchAssetFailureResponse {
+  ok: false
+  error: string
+}
+
+export type FetchAssetResponse =
+  | FetchAssetSuccessResponse
+  | FetchAssetFailureResponse
+
+export interface WindowFetchAssetRequest {
+  type: WindowMessageType.FetchAssetRequest
+  id: string
+  src: string
+}
+
+export interface WindowFetchAssetResponse {
+  type: WindowMessageType.FetchAssetResponse
+  id: string
+  response: FetchAssetResponse
+}
+
+export type Message = ExecuteScriptMessage | FetchAssetMessage
 
 export enum EventName {
   Console = 'console',

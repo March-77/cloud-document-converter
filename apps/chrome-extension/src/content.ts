@@ -1,8 +1,21 @@
 import { chunk } from 'es-toolkit/array'
-import { EventName, portImpl } from './common/message'
+import {
+  EventName,
+  RuntimeMessageType,
+  WindowMessageType,
+  portImpl,
+  type FetchAssetResponse,
+  type WindowFetchAssetRequest,
+} from './common/message'
 
 const COMMENT_BUTTON_CLASS = '.docx-comment__first-comment-btn'
 const HELP_BLOCK_CLASS = '.help-block'
+const DOWNLOAD_ONLY_HOSTS = new Set([
+  'docs.corp.kuaishou.com',
+  'docs.qingque.cn',
+  'kstack.corp.kuaishou.com',
+])
+const KSTACK_STATIC_IMAGE_HOST = 'static.yximgs.com'
 
 let disposables: (() => void)[] = []
 
@@ -20,10 +33,86 @@ interface Button {
   height: number
 }
 
+const isDownloadOnlyHost = (): boolean =>
+  DOWNLOAD_ONLY_HOSTS.has(location.hostname)
+
+const isWindowFetchAssetRequest = (
+  data: unknown,
+): data is WindowFetchAssetRequest =>
+  typeof data === 'object' &&
+  data !== null &&
+  'type' in data &&
+  data.type === WindowMessageType.FetchAssetRequest &&
+  'id' in data &&
+  typeof data.id === 'string' &&
+  'src' in data &&
+  typeof data.src === 'string'
+
+const isAllowedAssetBridgeRequest = (src: string): boolean => {
+  try {
+    const url = new URL(src, location.href)
+    if (url.protocol !== 'https:') return false
+    if (url.hostname === location.hostname) return true
+
+    return (
+      location.hostname === 'kstack.corp.kuaishou.com' &&
+      url.hostname === KSTACK_STATIC_IMAGE_HOST
+    )
+  } catch {
+    return false
+  }
+}
+
+const initAssetFetchBridge = (): void => {
+  if (!isDownloadOnlyHost()) return
+
+  const onMessage = async (event: MessageEvent<unknown>) => {
+    if (event.source !== window || event.origin !== location.origin) return
+    if (!isWindowFetchAssetRequest(event.data)) return
+
+    const { id, src } = event.data
+    let response: FetchAssetResponse
+
+    try {
+      response = isAllowedAssetBridgeRequest(src)
+        ? await chrome.runtime.sendMessage({
+            type: RuntimeMessageType.FetchAsset,
+            src: new URL(src, location.href).toString(),
+          })
+        : {
+            ok: false,
+            error: 'Asset fetch is not allowed for this page',
+          }
+    } catch (error) {
+      response = {
+        ok: false,
+        error: String(error),
+      }
+    }
+
+    window.postMessage(
+      {
+        type: WindowMessageType.FetchAssetResponse,
+        id,
+        response,
+      },
+      location.origin,
+    )
+  }
+
+  window.addEventListener('message', onMessage)
+  disposables.push(() => {
+    window.removeEventListener('message', onMessage)
+  })
+}
+
 const initButtons = (): void => {
   const root = document.body
+  const isDownloadOnly = isDownloadOnlyHost()
 
   const isReady = () => {
+    if (isDownloadOnly) return true
+
     // Comment button may not be displayed
     for (const selector of [HELP_BLOCK_CLASS]) {
       if (!root.querySelector(selector)) {
@@ -108,28 +197,39 @@ const initButtons = (): void => {
       },
     ]
 
-    const buttons = operates.map<Button>(({ type, innerHtml, action }) => {
-      const btn = document.createElement('button')
-      btn.type = 'button'
-      btn.setAttribute('data-CDC-button-type', type)
-      btn.innerHTML = innerHtml
+    const buttons = operates
+      .filter(({ type }) => !isDownloadOnly || type === 'download')
+      .map<Button>(({ type, innerHtml, action }) => {
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.setAttribute('data-CDC-button-type', type)
+        btn.innerHTML = innerHtml
 
-      btn.style.width = '36px'
-      btn.style.height = '36px'
+        btn.style.width = '36px'
+        btn.style.height = '36px'
 
-      btn.addEventListener('click', action)
+        btn.addEventListener('click', action)
 
-      return {
-        element: btn,
-        width: 36,
-        height: 36,
-      }
-    })
+        return {
+          element: btn,
+          width: 36,
+          height: 36,
+        }
+      })
 
     const getOriginalBtnPos = (buttons: Button[]) => {
+      const defaultBtnHeight = 36
+      const defaultGap = 14
       const helpBlock: HTMLDivElement | null =
         root.querySelector(HELP_BLOCK_CLASS)
       if (!helpBlock) {
+        if (isDownloadOnly) {
+          return buttons.map((_, index) => ({
+            right: 24,
+            bottom: 24 + index * (defaultGap + defaultBtnHeight),
+          }))
+        }
+
         return
       }
 
@@ -140,9 +240,6 @@ const initButtons = (): void => {
 
       const commentButton: HTMLDivElement | null =
         root.querySelector(COMMENT_BUTTON_CLASS)
-
-      const defaultBtnHeight = 36
-      const defaultGap = 14
 
       // Comment button may not be displayed
       if (!commentButton) {
@@ -305,6 +402,7 @@ const initButtons = (): void => {
 }
 
 function initContent(): void {
+  initAssetFetchBridge()
   initButtons()
 }
 
