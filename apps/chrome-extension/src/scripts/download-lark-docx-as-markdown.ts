@@ -2,8 +2,8 @@ import i18next from 'i18next'
 import { Toast, Docx, docx, type mdast } from '@dolphin/lark'
 import { Minute, OneHundred, Second, waitFor } from '@dolphin/common'
 import { fileSave, supported } from 'browser-fs-access'
-import { fs } from '@zip.js/zip.js'
-import normalizeFileName from 'filenamify/browser'
+import { fs, configure } from '@zip.js/zip.js'
+import { safeNormalizeFileName } from '@/lib/utils'
 import { cluster } from 'radash'
 import { CommonTranslationKey, en, Namespace, zh } from '../common/i18n'
 import {
@@ -27,6 +27,8 @@ import {
   fencedCodeBlock,
   htmlTableToMarkdown,
 } from './vodka-markdown'
+
+configure({ useWebWorkers: false })
 
 const uniqueFileName = new UniqueFileName()
 
@@ -413,7 +415,7 @@ const cleanDocumentTitle = (value: string): string =>
   )
 
 const normalizeDocumentFileName = (value: string): string =>
-  normalizeFileName(
+  safeNormalizeFileName(
     (cleanDocumentTitle(value) || 'doc')
       .replace(/^\d+(?=\p{Script=Han})/u, '')
       .slice(0, OneHundred),
@@ -1152,7 +1154,7 @@ const main = async (options: { signal?: AbortSignal } = {}) => {
   await transformMentionUsers(mentionUsers)
 
   const recommendName = docx.pageTitle
-    ? normalizeFileName(docx.pageTitle.slice(0, OneHundred))
+    ? safeNormalizeFileName(docx.pageTitle.slice(0, OneHundred))
     : 'doc'
   const isZip = images.length > 0 || files.length > 0
   const ext = isZip ? '.zip' : '.md'

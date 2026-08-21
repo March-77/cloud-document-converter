@@ -126,32 +126,34 @@ enum MenuItemId {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: MenuItemId.DOWNLOAD_DOCX_AS_MARKDOWN,
-    title: chrome.i18n.getMessage('download_docx_as_markdown'),
-    documentUrlPatterns: sharedDocumentUrlPatterns,
-    contexts: ['page', 'editable'],
-  })
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: MenuItemId.DOWNLOAD_DOCX_AS_MARKDOWN,
+      title: chrome.i18n.getMessage('download_docx_as_markdown'),
+      documentUrlPatterns: sharedDocumentUrlPatterns,
+      contexts: ['page', 'editable'],
+    })
 
-  chrome.contextMenus.create({
-    id: MenuItemId.DOWNLOAD_DOCX_AS_HTML,
-    title: chrome.i18n.getMessage('download_docx_as_html'),
-    documentUrlPatterns: sharedDocumentUrlPatterns,
-    contexts: ['page', 'editable'],
-  })
+    chrome.contextMenus.create({
+      id: MenuItemId.DOWNLOAD_DOCX_AS_HTML,
+      title: chrome.i18n.getMessage('download_docx_as_html'),
+      documentUrlPatterns: sharedDocumentUrlPatterns,
+      contexts: ['page', 'editable'],
+    })
 
-  chrome.contextMenus.create({
-    id: MenuItemId.COPY_DOCX_AS_MARKDOWN,
-    title: chrome.i18n.getMessage('copy_docx_as_markdown'),
-    documentUrlPatterns: larkDocumentUrlPatterns,
-    contexts: ['page', 'editable'],
-  })
+    chrome.contextMenus.create({
+      id: MenuItemId.COPY_DOCX_AS_MARKDOWN,
+      title: chrome.i18n.getMessage('copy_docx_as_markdown'),
+      documentUrlPatterns: sharedDocumentUrlPatterns,
+      contexts: ['page', 'editable'],
+    })
 
-  chrome.contextMenus.create({
-    id: MenuItemId.VIEW_DOCX_AS_MARKDOWN,
-    title: chrome.i18n.getMessage('view_docx_as_markdown'),
-    documentUrlPatterns: larkDocumentUrlPatterns,
-    contexts: ['page', 'editable'],
+    chrome.contextMenus.create({
+      id: MenuItemId.VIEW_DOCX_AS_MARKDOWN,
+      title: chrome.i18n.getMessage('view_docx_as_markdown'),
+      documentUrlPatterns: sharedDocumentUrlPatterns,
+      contexts: ['page', 'editable'],
+    })
   })
 })
 

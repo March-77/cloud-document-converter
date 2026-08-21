@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { Eye, Copy, Download, FileCode, Info, Settings } from 'lucide-vue-next'
+import {
+  Eye,
+  Copy,
+  Download,
+  FileCode,
+  Info,
+  Settings,
+  FolderDown,
+} from 'lucide-vue-next'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +38,17 @@ const handleOpenOptionsPage = () => {
     chrome.runtime.openOptionsPage()
   }
 }
+
+const handleOpenBatchDownloadPage = () => {
+  if (import.meta.env.DEV) {
+    window.open('/pages/batch-download.html', '_blank')
+  } else {
+    chrome.tabs.create({
+      url: chrome.runtime.getURL('pages/batch-download.html'),
+    })
+  }
+  window.close()
+}
 </script>
 
 <template>
@@ -54,6 +73,10 @@ const handleOpenOptionsPage = () => {
       >
         <FileCode />
         {{ t('lark.docx.download_html') }}
+      </DropdownMenuItem>
+      <DropdownMenuItem @select="handleOpenBatchDownloadPage">
+        <FolderDown />
+        {{ t('lark.docx.batch_download') }}
       </DropdownMenuItem>
       <DropdownMenuSeparator />
       <DropdownMenuItem
