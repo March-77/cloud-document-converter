@@ -2,6 +2,9 @@
   "download_docx_as_markdown": {
     "message": "Download as Markdown"
   },
+  "download_docx_as_html": {
+    "message": "Download as HTML"
+  },
   "copy_docx_as_markdown": {
     "message": "Copy as Markdown"
   },

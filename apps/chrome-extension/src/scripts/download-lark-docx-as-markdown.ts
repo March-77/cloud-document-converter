@@ -22,6 +22,11 @@ import {
 } from '../common/utils'
 import { getSettings, Grid } from '../common/settings'
 import { DownloadMethod, SettingKey } from '@/common/settings'
+import {
+  codeMirrorToMarkdown,
+  fencedCodeBlock,
+  htmlTableToMarkdown,
+} from './vodka-markdown'
 
 const uniqueFileName = new UniqueFileName()
 
@@ -503,53 +508,6 @@ interface VodkaTextRecord {
   x: number
 }
 
-const isVodkaCodeLineNumber = (text: string): boolean => /^\d+$/.test(text)
-
-const normalizeVodkaCodeBlocks = (
-  records: VodkaTextRecord[],
-): VodkaTextRecord[] => {
-  const normalized: VodkaTextRecord[] = []
-  const codeToolbarTexts = new Set(['自动换行', '折叠'])
-
-  for (let index = 0; index < records.length; index++) {
-    const record = records[index]
-    const language = record.text.toLowerCase() === 'sql' ? 'sql' : null
-
-    if (!language) {
-      normalized.push(record)
-      continue
-    }
-
-    let cursor = index + 1
-    while (codeToolbarTexts.has(records[cursor]?.text)) {
-      cursor++
-    }
-
-    const codeLines: string[] = []
-    while (
-      cursor < records.length &&
-      isVodkaCodeLineNumber(records[cursor].text) &&
-      records[cursor + 1] !== undefined
-    ) {
-      codeLines.push(records[cursor + 1].text)
-      cursor += 2
-    }
-
-    if (codeLines.length === 0) {
-      normalized.push(record)
-      continue
-    }
-
-    normalized.push({
-      ...record,
-      text: ['```' + language, ...codeLines, '```'].join('\n'),
-    })
-    index = cursor - 1
-  }
-
-  return normalized
-}
-
 const extensionFromContentType = (
   contentType: string | null,
 ): string | null => {
@@ -659,11 +617,32 @@ const collectVodkaDocument = async (): Promise<{
   const collectVisible = () => {
     const scrollTop = scroller.scrollTop
 
+    Array.from(root.querySelectorAll<HTMLElement>('table'))
+      .filter(table => !table.closest('table table'))
+      .forEach(table => {
+        const text = htmlTableToMarkdown(table)
+        if (!text) return
+
+        const rect = table.getBoundingClientRect()
+        records.push({
+          text,
+          y: Math.round(scrollTop + rect.top),
+          x: Math.round(rect.left),
+        })
+      })
+
     Array.from(root.querySelectorAll<HTMLElement>('.vodka-lineview-content'))
+      .filter(line => !line.closest('table'))
       .map(line => {
         const rect = line.getBoundingClientRect()
+        const codeBlock = line.querySelector<HTMLElement>(
+          '.vodka-embeddedobject-code-block-wrapper, .CodeMirror',
+        )
         return {
-          text: normalizeVodkaLineText(line.innerText),
+          text: codeBlock
+            ? (codeMirrorToMarkdown(codeBlock) ??
+              normalizeVodkaLineText(line.innerText))
+            : normalizeVodkaLineText(line.innerText),
           y: Math.round(scrollTop + rect.top),
           x: Math.round(rect.left),
         }
@@ -674,6 +653,7 @@ const collectVodkaDocument = async (): Promise<{
       })
 
     Array.from(root.querySelectorAll<HTMLImageElement>('img'))
+      .filter(image => !image.closest('table'))
       .map(image => {
         const src = image.currentSrc || image.src
         const rect = image.getBoundingClientRect()
@@ -705,7 +685,7 @@ const collectVodkaDocument = async (): Promise<{
 
   const uniqueLines = Array.from(
     new Map(
-      records.map(record => [`${record.y}:${record.text}`, record]),
+      records.map(record => [`${record.y.toFixed()}:${record.text}`, record]),
     ).values(),
   )
     .sort((a, b) => a.y - b.y || a.x - b.x)
@@ -713,11 +693,10 @@ const collectVodkaDocument = async (): Promise<{
 
   const title = normalizeDocumentFileName(document.title)
 
-  const body = normalizeVodkaCodeBlocks(
+  const body =
     uniqueLines.at(0)?.text.replace(/^\d+/, '') === title
       ? uniqueLines.slice(1)
-      : uniqueLines,
-  )
+      : uniqueLines
 
   const items: { text: string; y: number; x?: number }[] = [
     { text: `# ${title}`, y: Number.NEGATIVE_INFINITY },
@@ -750,14 +729,18 @@ const exportVodkaDocumentAsZip = async (): Promise<boolean> => {
   let markdown = result.markdown
   for (let index = 0; index < images.length; index++) {
     const image = images[index]
-    const response = await fetch(image.src, { credentials: 'include' })
-    if (!response.ok) continue
+    const asset = await fetchGenericImageBlob(image.src)
+    if (!asset) {
+      markdown = markdown.replace(`](${image.filename})`, `](${image.src})`)
+      continue
+    }
 
-    const blob = await response.blob()
     const extension =
-      extensionFromContentType(blob.type) ?? extensionFromUrl(image.src)
+      extensionFromContentType(asset.contentType) ??
+      extensionFromContentType(asset.blob.type) ??
+      extensionFromUrl(image.src)
     const filename = `image-${(index + 1).toFixed().padStart(3, '0')}${extension}`
-    zipFs.addBlob(`${title}/images/${filename}`, blob)
+    zipFs.addBlob(`${title}/images/${filename}`, asset.blob)
     markdown = markdown.replace(`](${image.filename})`, `](images/${filename})`)
   }
 
@@ -814,7 +797,7 @@ const createGenericDomTransformer = () => {
       case 'i':
         return `*${children()}*`
       case 'code':
-        return `\`${normalizeText(node.textContent ?? '')}\``
+        return `\`${normalizeText(node.textContent)}\``
       case 'a': {
         const href = node.getAttribute('href')
         const text = children() || escapeMarkdown(normalizeText(href ?? ''))
@@ -860,9 +843,9 @@ const createGenericDomTransformer = () => {
         node.className,
         node.querySelector('code')?.className ?? '',
       ].join(' ')
-      const language = className.match(/language-([\w-]+)/)?.[1] ?? ''
+      const language = /language-([\w-]+)/.exec(className)?.[1] ?? ''
 
-      return ['```' + language, (node.textContent ?? '').trimEnd(), '```']
+      return [fencedCodeBlock(node.textContent.trimEnd(), language)]
     }
     if (tag === 'blockquote') {
       const text = childBlocks().join('\n\n') || inline(node)
@@ -885,24 +868,8 @@ const createGenericDomTransformer = () => {
         .flat(1)
     }
     if (tag === 'table') {
-      const rows = Array.from(node.querySelectorAll('tr')).map(row =>
-        Array.from(row.querySelectorAll('th,td')).map(cell =>
-          normalizeText((cell as HTMLElement).innerText),
-        ),
-      )
-      if (rows.length === 0) return []
-      const maxColumns = Math.max(...rows.map(row => row.length))
-      const normalizedRows = rows.map(row =>
-        Array.from({ length: maxColumns }, (_, index) =>
-          escapeMarkdown(row[index] ?? ''),
-        ),
-      )
-      const [head = [], ...body] = normalizedRows
-      return [
-        `| ${head.join(' | ')} |`,
-        `| ${head.map(() => '---').join(' | ')} |`,
-        ...body.map(row => `| ${row.join(' | ')} |`),
-      ]
+      const markdown = htmlTableToMarkdown(node)
+      return markdown ? [markdown] : []
     }
 
     const blocks = childBlocks()
@@ -930,10 +897,12 @@ const exportGenericDocumentAsMarkdown = async (): Promise<void> => {
   const root = selectGenericDocumentRoot()
   const transformer = createGenericDomTransformer()
   const result = transformer.transform(root)
-  const displayTitle =
-    cleanDocumentTitle(
-      document.title || root.querySelector('h1')?.textContent || '',
-    ) || 'doc'
+  const sourceTitle = [
+    document.title,
+    root.querySelector('h1')?.textContent,
+  ].find(value => value)
+  const cleanedTitle = cleanDocumentTitle(sourceTitle ?? '')
+  const displayTitle = cleanedTitle ? cleanedTitle : 'doc'
   const title = normalizeDocumentFileName(displayTitle)
   const markdownBody = result.markdown.trim()
   let markdown =

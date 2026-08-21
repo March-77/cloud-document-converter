@@ -47,6 +47,7 @@ export const i18n = createI18n({
       'download.method.showSaveFilePicker.description':
         'Shows a file picker that allows a user to save a file. Either by selecting an existing file, or entering a name for a new file.',
       'lark.docx.download': 'Download as Markdown',
+      'lark.docx.download_html': 'Download as HTML',
       'lark.docx.copy': 'Copy as Markdown',
       'lark.docx.view': 'View as Markdown',
       'help.and.feedback': 'Help and Feedback',
@@ -88,6 +89,7 @@ export const i18n = createI18n({
       'download.method.showSaveFilePicker.description':
         '显示一个文件选择器，允许用户保存文件。用户既可选择现有文件，也可输入新文件的名称。',
       'lark.docx.download': '下载为 Markdown',
+      'lark.docx.download_html': '下载为 HTML',
       'lark.docx.copy': '复制为 Markdown',
       'lark.docx.view': '查看为 Markdown',
       'help.and.feedback': '帮助和反馈',

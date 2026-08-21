@@ -72,7 +72,8 @@ const blobToDataUrl = async (
   blob: Blob,
   contentType: string | null,
 ): Promise<string> => {
-  const mimeType = blob.type || contentType || 'application/octet-stream'
+  const mimeType =
+    [blob.type, contentType].find(value => value) ?? 'application/octet-stream'
   return `data:${mimeType};base64,${arrayBufferToBase64(
     await blob.arrayBuffer(),
   )}`
@@ -112,13 +113,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
 const isFetchAssetMessage = (message: unknown): message is FetchAssetMessage =>
-  isRecord(message) && message.type === RuntimeMessageType.FetchAsset
+  isRecord(message) && message['type'] === RuntimeMessageType.FetchAsset
 
 const isExecuteScriptMessage = (message: unknown): message is { flag: Flag } =>
   isRecord(message) && 'flag' in message
 
 enum MenuItemId {
   DOWNLOAD_DOCX_AS_MARKDOWN = 'download_docx_as_markdown',
+  DOWNLOAD_DOCX_AS_HTML = 'download_docx_as_html',
   COPY_DOCX_AS_MARKDOWN = 'copy_docx_as_markdown',
   VIEW_DOCX_AS_MARKDOWN = 'view_docx_as_markdown',
 }
@@ -127,6 +129,13 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: MenuItemId.DOWNLOAD_DOCX_AS_MARKDOWN,
     title: chrome.i18n.getMessage('download_docx_as_markdown'),
+    documentUrlPatterns: sharedDocumentUrlPatterns,
+    contexts: ['page', 'editable'],
+  })
+
+  chrome.contextMenus.create({
+    id: MenuItemId.DOWNLOAD_DOCX_AS_HTML,
+    title: chrome.i18n.getMessage('download_docx_as_html'),
     documentUrlPatterns: sharedDocumentUrlPatterns,
     contexts: ['page', 'editable'],
   })
@@ -151,6 +160,13 @@ const executeScriptByFlag = async (flag: string | number, tabId: number) => {
     case MenuItemId.DOWNLOAD_DOCX_AS_MARKDOWN:
       await chrome.scripting.executeScript({
         files: ['bundles/scripts/download-lark-docx-as-markdown.js'],
+        target: { tabId },
+        world: 'MAIN',
+      })
+      break
+    case MenuItemId.DOWNLOAD_DOCX_AS_HTML:
+      await chrome.scripting.executeScript({
+        files: ['bundles/scripts/download-lark-docx-as-html.js'],
         target: { tabId },
         world: 'MAIN',
       })
@@ -180,33 +196,33 @@ chrome.contextMenus.onClicked.addListener(({ menuItemId }, tab) => {
   }
 })
 
-chrome.runtime.onMessage.addListener((_message, sender, sendResponse) => {
-  const message = _message
+chrome.runtime.onMessage.addListener(
+  (message: unknown, sender, sendResponse) => {
+    if (isFetchAssetMessage(message)) {
+      fetchAsset(message, sender).then(sendResponse).catch(console.error)
 
-  if (isFetchAssetMessage(message)) {
-    fetchAsset(message, sender).then(sendResponse).catch(console.error)
+      return true
+    }
+
+    if (!isExecuteScriptMessage(message)) {
+      return false
+    }
+
+    const executeScript = async () => {
+      const activeTabs = await chrome.tabs.query({
+        currentWindow: true,
+        active: true,
+      })
+
+      const activeTabId = activeTabs.at(0)?.id
+
+      if (activeTabs.length === 1 && activeTabId !== undefined) {
+        await executeScriptByFlag(message.flag, activeTabId)
+      }
+    }
+
+    executeScript().then(sendResponse).catch(console.error)
 
     return true
-  }
-
-  if (!isExecuteScriptMessage(message)) {
-    return false
-  }
-
-  const executeScript = async () => {
-    const activeTabs = await chrome.tabs.query({
-      currentWindow: true,
-      active: true,
-    })
-
-    const activeTabId = activeTabs.at(0)?.id
-
-    if (activeTabs.length === 1 && activeTabId !== undefined) {
-      await executeScriptByFlag(message.flag, activeTabId)
-    }
-  }
-
-  executeScript().then(sendResponse).catch(console.error)
-
-  return true
-})
+  },
+)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Eye, Copy, Download, Info, Settings } from 'lucide-vue-next'
+import { Eye, Copy, Download, FileCode, Info, Settings } from 'lucide-vue-next'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -48,6 +48,12 @@ const handleOpenOptionsPage = () => {
       >
         <Download />
         {{ t('lark.docx.download') }}
+      </DropdownMenuItem>
+      <DropdownMenuItem
+        @select="() => handleMessage(Flag.ExecuteDownloadHtmlScript)"
+      >
+        <FileCode />
+        {{ t('lark.docx.download_html') }}
       </DropdownMenuItem>
       <DropdownMenuSeparator />
       <DropdownMenuItem
